@@ -215,9 +215,21 @@ app.get('/api/scan/stream', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
   scanState.listeners.push(res);
-  if (!scanState.running && scanState.results.length > 0) {
-    res.write(`data: ${JSON.stringify({ type: 'done', results: scanState.results })}\n\n`);
+  const sync = {
+    type: 'sync',
+    running: scanState.running,
+    results: scanState.results,
+    progress: scanState.progress,
+    startTime: scanState.startTime,
+  };
+  if (scanState.running && scanState.progress) {
+    const p = scanState.progress;
+    sync.elapsed = scanState.startTime ? ((Date.now() - scanState.startTime) / 1000).toFixed(1) : 0;
+  } else if (!scanState.running && scanState.results.length > 0) {
+    sync.type = 'done';
+    sync.results = scanState.results;
   }
+  res.write(`data: ${JSON.stringify(sync)}\n\n`);
   req.on('close', () => {
     scanState.listeners = scanState.listeners.filter((r) => r !== res);
   });

@@ -280,21 +280,42 @@
         });
     }
 
+    function applyProgress(data) {
+      const totalHosts = data.totalHosts || 1;
+      const completedHosts = data.completedHosts ?? 0;
+      const hostProgress = data.hostProgress ?? 0;
+      const hostTotal = data.hostTotal || 65535;
+      progressHosts.textContent = `${completedHosts} / ${totalHosts}`;
+      progressPorts.textContent = `${hostProgress} / ${hostTotal}`;
+      const totalPorts = totalHosts * 65535;
+      const donePorts = completedHosts * 65535 + hostProgress;
+      progressFill.style.width = totalPorts ? Math.min(100, (100 * donePorts) / totalPorts) + '%' : '0%';
+    }
+
     function connectStream() {
       if (eventSource) eventSource.close();
       eventSource = new EventSource('/api/scan/stream');
       eventSource.onmessage = (e) => {
         const data = JSON.parse(e.data);
+        if (data.type === 'sync') {
+          sectionProgress.style.display = 'block';
+          if (data.running) {
+            btnScan.disabled = true;
+            setStatus('스캔 중… (새로고침해도 유지됨)', 'running');
+            if (data.progress) applyProgress(data.progress);
+            if (data.results && data.results.length > 0) renderResults(data.results);
+          } else if (data.results && data.results.length > 0) {
+            progressFill.style.width = '100%';
+            progressHosts.textContent = `완료 ${data.results.length} 호스트`;
+            progressPorts.textContent = '65535 / 65535';
+            setStatus('이전 스캔 결과', 'done');
+            btnScan.disabled = false;
+            renderResults(data.results);
+          }
+          return;
+        }
         if (data.type === 'progress') {
-          const totalHosts = data.totalHosts || 1;
-          const completedHosts = data.completedHosts ?? 0;
-          const hostProgress = data.hostProgress ?? 0;
-          const hostTotal = data.hostTotal || 65535;
-          progressHosts.textContent = `${completedHosts} / ${totalHosts}`;
-          progressPorts.textContent = `${hostProgress} / ${hostTotal}`;
-          const totalPorts = totalHosts * 65535;
-          const donePorts = completedHosts * 65535 + hostProgress;
-          progressFill.style.width = totalPorts ? Math.min(100, (100 * donePorts) / totalPorts) + '%' : '0%';
+          applyProgress(data);
         } else if (data.type === 'result') {
           const existing = Array.from(resultsBody.querySelectorAll('tr')).filter((tr) => !tr.querySelector('.empty'));
           const newRow = document.createElement('tr');
@@ -329,6 +350,7 @@
 
     btnScan.addEventListener('click', startScan);
     loadInterfaces();
+    connectStream();
   </script>
 </body>
 </html>
