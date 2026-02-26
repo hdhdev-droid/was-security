@@ -1,0 +1,14 @@
+{
+  "name": "was-security",
+  "version": "1.0.0",
+  "description": "NIC discovery and network port scanner",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

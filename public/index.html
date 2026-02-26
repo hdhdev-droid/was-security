@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WAS Security - 포트 스캐너</title>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #18181c;
+      --border: #2a2a30;
+      --text: #e4e4e7;
+      --muted: #71717a;
+      --accent: #22d3ee;
+      --accent-dim: #0891b2;
+      --success: #4ade80;
+      --warning: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0 0 0.25rem 0;
+      color: var(--accent);
+    }
+    .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.5rem; }
+    section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    section h2 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin: 0 0 0.75rem 0;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .nic-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .nic-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.6rem 0.75rem;
+      background: var(--bg);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 0.875rem;
+    }
+    .nic-item label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+    .nic-name { font-weight: 600; color: var(--accent); }
+    .nic-addr { color: var(--muted); }
+    .nic-range { font-size: 0.8rem; color: var(--muted); }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      margin-top: 1rem;
+    }
+    button {
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:hover { background: var(--accent-dim); }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .progress-box {
+      font-size: 0.875rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    .progress-box strong { color: var(--text); }
+    .progress-bar {
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 0.5rem;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.2s ease;
+    }
+    .results-table-wrap {
+      overflow-x: auto;
+      margin-top: 0.75rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+    tr:hover td { background: rgba(34, 211, 238, 0.05); }
+    .port-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .port-badge {
+      background: var(--border);
+      color: var(--text);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-family: ui-monospace, monospace;
+      font-size: 0.8rem;
+    }
+    .status { font-size: 0.85rem; margin-top: 0.5rem; }
+    .status.running { color: var(--warning); }
+    .status.done { color: var(--success); }
+    .status.error { color: #f87171; }
+    .empty { color: var(--muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>WAS Security 포트 스캐너</h1>
+    <p class="subtitle">연결된 NIC 기준 네트워크 대역 전체 포트(1–65535) 스캔</p>
+
+    <section>
+      <h2>네트워크 인터페이스 (NIC)</h2>
+      <div id="nic-list" class="nic-list">
+        <span class="empty">불러오는 중…</span>
+      </div>
+      <div class="controls">
+        <button id="btn-scan" type="button">스캔 시작</button>
+        <span id="status" class="status"></span>
+      </div>
+    </section>
+
+    <section id="section-progress" style="display: none;">
+      <h2>진행 상황</h2>
+      <div class="progress-box">
+        완료된 호스트 <strong id="progress-hosts">0 / 0</strong> · 현재 배치 포트 <strong id="progress-ports">0 / 65535</strong>
+      </div>
+      <div class="progress-bar">
+        <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>스캔 결과 (열린 포트가 있는 호스트)</h2>
+      <div class="results-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>호스트</th>
+              <th>열린 포트</th>
+            </tr>
+          </thead>
+          <tbody id="results-body">
+            <tr><td colspan="2" class="empty">스캔을 시작하면 결과가 여기에 표시됩니다.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const nicListEl = document.getElementById('nic-list');
+    const btnScan = document.getElementById('btn-scan');
+    const statusEl = document.getElementById('status');
+    const sectionProgress = document.getElementById('section-progress');
+    const progressHosts = document.getElementById('progress-hosts');
+    const progressPorts = document.getElementById('progress-ports');
+    const progressFill = document.getElementById('progress-fill');
+    const resultsBody = document.getElementById('results-body');
+
+    let eventSource = null;
+
+    async function loadInterfaces() {
+      try {
+        const res = await fetch('/api/interfaces');
+        const list = await res.json();
+        if (list.length === 0) {
+          nicListEl.innerHTML = '<span class="empty">연결된 NIC가 없습니다.</span>';
+          return;
+        }
+        nicListEl.innerHTML = list.map((nic, i) => `
+          <div class="nic-item">
+            <label>
+              <input type="radio" name="nic" value="${i}" ${i === 0 ? 'checked' : ''} />
+              <span class="nic-name">${escapeHtml(nic.name)}</span>
+            </label>
+            <span class="nic-addr">${escapeHtml(nic.address)} / ${escapeHtml(nic.netmask)}</span>
+            <span class="nic-range">${escapeHtml(nic.hostRange)}</span>
+          </div>
+        `).join('');
+      } catch (e) {
+        nicListEl.innerHTML = '<span class="empty">인터페이스 조회 실패: ' + escapeHtml(e.message) + '</span>';
+      }
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function setStatus(msg, type = '') {
+      statusEl.textContent = msg;
+      statusEl.className = 'status ' + type;
+    }
+
+    function renderResults(results) {
+      if (!results || results.length === 0) {
+        resultsBody.innerHTML = '<tr><td colspan="2" class="empty">열린 포트가 있는 호스트가 없습니다.</td></tr>';
+        return;
+      }
+      resultsBody.innerHTML = results.map(({ host, ports }) => `
+        <tr>
+          <td>${escapeHtml(host)}</td>
+          <td><div class="port-list">${ports.map(p => `<span class="port-badge">${p}</span>`).join('')}</div></td>
+        </tr>
+      `).join('');
+    }
+
+    function startScan() {
+      const idx = parseInt(document.querySelector('input[name="nic"]:checked')?.value ?? '0', 10);
+      btnScan.disabled = true;
+      setStatus('스캔 시작 중…', 'running');
+      sectionProgress.style.display = 'block';
+      progressFill.style.width = '0%';
+      resultsBody.innerHTML = '<tr><td colspan="2" class="empty">대기 중…</td></tr>';
+
+      fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interfaceIndex: idx }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.error) {
+            setStatus(data.error, 'error');
+            btnScan.disabled = false;
+            return;
+          }
+          setStatus('스캔 중… (실시간 결과 갱신)', 'running');
+          connectStream();
+        })
+        .catch((e) => {
+          setStatus('시작 실패: ' + e.message, 'error');
+          btnScan.disabled = false;
+        });
+    }
+
+    function connectStream() {
+      if (eventSource) eventSource.close();
+      eventSource = new EventSource('/api/scan/stream');
+      eventSource.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'progress') {
+          const totalHosts = data.totalHosts || 1;
+          const completedHosts = data.completedHosts ?? 0;
+          const hostProgress = data.hostProgress ?? 0;
+          const hostTotal = data.hostTotal || 65535;
+          progressHosts.textContent = `${completedHosts} / ${totalHosts}`;
+          progressPorts.textContent = `${hostProgress} / ${hostTotal}`;
+          const totalPorts = totalHosts * 65535;
+          const donePorts = completedHosts * 65535 + hostProgress;
+          progressFill.style.width = totalPorts ? Math.min(100, (100 * donePorts) / totalPorts) + '%' : '0%';
+        } else if (data.type === 'result') {
+          const existing = Array.from(resultsBody.querySelectorAll('tr')).filter((tr) => !tr.querySelector('.empty'));
+          const newRow = document.createElement('tr');
+          newRow.innerHTML = `
+            <td>${escapeHtml(data.host)}</td>
+            <td><div class="port-list">${(data.ports || []).map(p => `<span class="port-badge">${p}</span>`).join('')}</div></td>
+          `;
+          if (resultsBody.querySelector('.empty')) resultsBody.innerHTML = '';
+          resultsBody.appendChild(newRow);
+        } else if (data.type === 'done') {
+          eventSource.close();
+          eventSource = null;
+          progressFill.style.width = '100%';
+          progressHosts.textContent = data.results?.length ? `완료 ${data.results.length} 호스트` : '완료';
+          progressPorts.textContent = '65535 / 65535';
+          setStatus(`완료 (${data.elapsed || 0}초)`, 'done');
+          btnScan.disabled = false;
+          if (data.results && data.results.length > 0) renderResults(data.results);
+        } else if (data.type === 'error') {
+          setStatus(data.message || '오류 발생', 'error');
+          btnScan.disabled = false;
+          if (eventSource) eventSource.close();
+          eventSource = null;
+        }
+      };
+      eventSource.onerror = () => {
+        if (eventSource.readyState === EventSource.CLOSED) return;
+        setStatus('스트림 연결 끊김', 'error');
+        btnScan.disabled = false;
+      };
+    }
+
+    btnScan.addEventListener('click', startScan);
+    loadInterfaces();
+  </script>
+</body>
+</html>
