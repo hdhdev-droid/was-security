@@ -146,12 +146,133 @@
     .status.done { color: var(--success); }
     .status.error { color: #f87171; }
     .empty { color: var(--muted); font-style: italic; }
+    .debug-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: 1fr;
+    }
+    @media (min-width: 720px) {
+      .debug-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .debug-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+    }
+    .debug-card h3 {
+      margin: 0 0 0.5rem 0;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    .debug-card label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+    }
+    .debug-card input[type="text"],
+    .debug-card input[type="number"] {
+      width: 100%;
+      padding: 0.45rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.85rem;
+      margin-bottom: 0.5rem;
+    }
+    .debug-card .row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+    .debug-card .row label.inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin: 0;
+      font-size: 0.8rem;
+      color: var(--text);
+    }
+    .debug-card button.secondary {
+      background: var(--border);
+      color: var(--text);
+      padding: 0.45rem 0.85rem;
+      font-size: 0.85rem;
+    }
+    .debug-card button.secondary:hover {
+      background: #3f3f46;
+    }
+    .debug-out {
+      margin: 0;
+      padding: 0.5rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.72rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      background: #0a0a0c;
+      border-radius: 4px;
+      max-height: 220px;
+      overflow: auto;
+      color: var(--muted);
+    }
+    .debug-out.ok { color: var(--success); }
+    .debug-out.err { color: #f87171; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>WAS Security 포트 스캐너</h1>
-    <p class="subtitle">연결된 NIC 기준 네트워크 대역 전체 포트(1–65535) 스캔</p>
+    <p class="subtitle">연결된 NIC 기준 네트워크 대역 전체 포트(1–65535) 스캔 · 도커 컨테이너 기준 아웃바운드 진단</p>
+
+    <section>
+      <h2>아웃바운드 네트워크 진단 (컨테이너에서 실행)</h2>
+      <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 0.75rem 0;">
+        웹 URL GET, ICMP ping, TCP 연결은 모두 <strong>서버(컨테이너)</strong>에서 나가는 트래픽입니다. Ping은 이미지에 <code>iputils-ping</code> 등이 있어야 하며, ICMP 제한 시 실패할 수 있습니다.
+      </p>
+      <div class="debug-grid">
+        <div class="debug-card">
+          <h3>HTTP(S) URL</h3>
+          <label for="dbg-url">URL (http/https)</label>
+          <input id="dbg-url" type="text" placeholder="https://example.com/" />
+          <div class="row">
+            <label class="inline"><input type="checkbox" id="dbg-insecure" /> TLS 검증 생략 (자체 서명 등)</label>
+          </div>
+          <div class="row">
+            <button type="button" class="secondary" id="btn-http">요청 실행</button>
+          </div>
+          <pre id="out-http" class="debug-out">결과가 여기에 표시됩니다.</pre>
+        </div>
+        <div class="debug-card">
+          <h3>Ping (ICMP)</h3>
+          <label for="dbg-ping-host">호스트 또는 IP</label>
+          <input id="dbg-ping-host" type="text" placeholder="8.8.8.8" />
+          <label for="dbg-ping-count">횟수 (1–10)</label>
+          <input id="dbg-ping-count" type="number" min="1" max="10" value="3" />
+          <div class="row">
+            <button type="button" class="secondary" id="btn-ping">Ping</button>
+          </div>
+          <pre id="out-ping" class="debug-out">결과가 여기에 표시됩니다.</pre>
+        </div>
+        <div class="debug-card">
+          <h3>TCP 연결</h3>
+          <label for="dbg-tcp-host">호스트 또는 도메인</label>
+          <input id="dbg-tcp-host" type="text" placeholder="example.com" />
+          <label for="dbg-tcp-port">포트</label>
+          <input id="dbg-tcp-port" type="number" min="1" max="65535" placeholder="443" />
+          <label for="dbg-tcp-timeout">타임아웃 (ms)</label>
+          <input id="dbg-tcp-timeout" type="number" min="500" max="60000" value="5000" />
+          <div class="row">
+            <button type="button" class="secondary" id="btn-tcp">연결 테스트</button>
+          </div>
+          <pre id="out-tcp" class="debug-out">결과가 여기에 표시됩니다.</pre>
+        </div>
+      </div>
+    </section>
 
     <section>
       <h2>네트워크 인터페이스 (NIC)</h2>
@@ -351,6 +472,70 @@
     btnScan.addEventListener('click', startScan);
     loadInterfaces();
     connectStream();
+
+    function showDebugOut(el, data, ok) {
+      el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+      el.classList.remove('ok', 'err');
+      el.classList.add(ok ? 'ok' : 'err');
+    }
+
+    document.getElementById('btn-http').addEventListener('click', async () => {
+      const url = document.getElementById('dbg-url').value.trim();
+      const insecure = document.getElementById('dbg-insecure').checked;
+      const out = document.getElementById('out-http');
+      out.textContent = '요청 중…';
+      out.className = 'debug-out';
+      try {
+        const res = await fetch('/api/debug/http', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, insecure, timeoutMs: 15000 }),
+        });
+        const data = await res.json();
+        showDebugOut(out, data, res.ok && data.ok !== false);
+      } catch (e) {
+        showDebugOut(out, e.message, false);
+      }
+    });
+
+    document.getElementById('btn-ping').addEventListener('click', async () => {
+      const host = document.getElementById('dbg-ping-host').value.trim();
+      const count = parseInt(document.getElementById('dbg-ping-count').value, 10) || 3;
+      const out = document.getElementById('out-ping');
+      out.textContent = '실행 중…';
+      out.className = 'debug-out';
+      try {
+        const res = await fetch('/api/debug/ping', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, count }),
+        });
+        const data = await res.json();
+        showDebugOut(out, data, res.ok && data.ok === true);
+      } catch (e) {
+        showDebugOut(out, e.message, false);
+      }
+    });
+
+    document.getElementById('btn-tcp').addEventListener('click', async () => {
+      const host = document.getElementById('dbg-tcp-host').value.trim();
+      const port = parseInt(document.getElementById('dbg-tcp-port').value, 10);
+      const timeoutMs = parseInt(document.getElementById('dbg-tcp-timeout').value, 10) || 5000;
+      const out = document.getElementById('out-tcp');
+      out.textContent = '연결 시도 중…';
+      out.className = 'debug-out';
+      try {
+        const res = await fetch('/api/debug/tcp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port, timeoutMs }),
+        });
+        const data = await res.json();
+        showDebugOut(out, data, res.ok && data.ok === true);
+      } catch (e) {
+        showDebugOut(out, e.message, false);
+      }
+    });
   </script>
 </body>
 </html>

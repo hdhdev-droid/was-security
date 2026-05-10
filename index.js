@@ -3,6 +3,7 @@ import net from 'net';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { runPing, tcpConnect, httpProbe, assertTcpTarget } from './network-debug.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -233,6 +234,39 @@ app.get('/api/scan/stream', (req, res) => {
   req.on('close', () => {
     scanState.listeners = scanState.listeners.filter((r) => r !== res);
   });
+});
+
+app.post('/api/debug/http', async (req, res) => {
+  try {
+    const result = await httpProbe(req.body?.url, {
+      timeoutMs: req.body?.timeoutMs,
+      method: req.body?.method,
+      insecure: req.body?.insecure,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/debug/ping', async (req, res) => {
+  try {
+    const result = await runPing(req.body?.host, { count: req.body?.count });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/debug/tcp', async (req, res) => {
+  try {
+    const { host, port } = assertTcpTarget(req.body?.host, req.body?.port);
+    const timeoutMs = Math.min(Math.max(Number(req.body?.timeoutMs) || 5000, 500), 60000);
+    const result = await tcpConnect(host, port, timeoutMs);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/', (req, res) => {
