@@ -273,6 +273,6 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-const server = app.listen(WEB_PORT, () => {
-  console.log(`WAS Security 포트 스캐너: http://localhost:${WEB_PORT} (WEB_PORT=${WEB_PORT})`);
+const server = app.listen(WEB_PORT, '0.0.0.0', () => {
+  console.log(`WAS Security 포트 스캐너: http://0.0.0.0:${WEB_PORT} (모든 인터페이스, WEB_PORT=${WEB_PORT})`);
 });
