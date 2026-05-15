@@ -1,16 +1,13 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import net from 'net';
 import http from 'http';
 import https from 'https';
+import dns from 'dns/promises';
 import { URL } from 'url';
-
-const execFileAsync = promisify(execFile);
+import netPing from 'net-ping';
 
 const HOST_PATTERN = /^[a-zA-Z0-9.-]+$/;
 const SHELL_METACHAR = /[;&|`$(){}[\]<>'"\n\r\\]/;
 
-/** Ping 대상 (도커 컨테이너의 ping 바이너리 인자로만 전달, 셸 미사용) */
 export function assertPingHost(host) {
   const h = String(host || '').trim();
   if (!h || h.length > 253) throw new Error('유효하지 않은 호스트입니다.');
@@ -31,55 +28,126 @@ export function assertTcpHost(host) {
   return h;
 }
 
+let v4Session = null;
+let v6Session = null;
+
+function getSession(family) {
+  if (family === 6) {
+    if (!v6Session) {
+      v6Session = netPing.createSession({
+        networkProtocol: netPing.NetworkProtocol.IPv6,
+        packetSize: 16,
+        retries: 0,
+        timeout: 3000,
+      });
+      v6Session.on('error', () => {});
+    }
+    return v6Session;
+  }
+  if (!v4Session) {
+    v4Session = netPing.createSession({
+      networkProtocol: netPing.NetworkProtocol.IPv4,
+      packetSize: 16,
+      retries: 0,
+      timeout: 3000,
+    });
+    v4Session.on('error', () => {});
+  }
+  return v4Session;
+}
+
+async function resolveTarget(host) {
+  if (net.isIP(host)) return { address: host, family: net.isIP(host) };
+  try {
+    const result = await dns.lookup(host, { verbatim: true });
+    return { address: result.address, family: result.family };
+  } catch (err) {
+    const e = new Error(`DNS 조회 실패: ${err.code || err.message}`);
+    e.code = 'EDNS';
+    throw e;
+  }
+}
+
+function pingOnce(session, address) {
+  return new Promise((resolve) => {
+    session.pingHost(address, (error, target, sent, rcvd) => {
+      const latencyMs = sent && rcvd ? rcvd - sent : null;
+      if (error) {
+        resolve({
+          ok: false,
+          target,
+          latencyMs,
+          error: error.code || error.constructor?.name || error.toString(),
+        });
+        return;
+      }
+      resolve({ ok: true, target, latencyMs });
+    });
+  });
+}
+
 export async function runPing(host, options = {}) {
   const count = Math.min(Math.max(Number(options.count) || 1, 1), 10);
   const safeHost = assertPingHost(host);
-  const platform = process.platform;
 
-  if (platform === 'win32') {
-    const { stdout, stderr } = await execFileAsync(
-      'ping',
-      ['-n', String(count), safeHost],
-      { timeout: 20000, maxBuffer: 1024 * 1024 }
-    );
-    return {
-      ok: true,
-      platform: 'win32',
-      command: `ping -n ${count} ${safeHost}`,
-      output: (stdout || stderr || '').trim(),
-    };
-  }
-
-  let args;
-  if (platform === 'darwin') {
-    args = ['-c', String(count), '-W', '3000', safeHost];
-  } else {
-    args = ['-c', String(count), '-W', '3', safeHost];
-  }
+  let target;
   try {
-    const { stdout, stderr } = await execFileAsync('ping', args, {
-      timeout: 20000,
-      maxBuffer: 1024 * 1024,
-    });
-    return {
-      ok: true,
-      platform,
-      command: `ping ${args.join(' ')}`,
-      output: (stdout || stderr || '').trim(),
-    };
+    target = await resolveTarget(safeHost);
   } catch (err) {
-    const stderr = err.stderr?.toString?.() ?? '';
-    const stdout = err.stdout?.toString?.() ?? '';
     return {
       ok: false,
-      platform,
-      command: `ping ${args.join(' ')}`,
-      error: err.message || String(err),
-      output: (stdout || stderr || '').trim(),
-      hint:
-        'Linux 컨테이너에서는 ping 바이너리가 필요합니다. 예: Alpine 이미지에 `apk add --no-cache iputils-ping` 또는 `--cap-add=NET_RAW`(icmp)',
+      method: 'icmp-raw',
+      host: safeHost,
+      error: err.message,
     };
   }
+
+  let session;
+  try {
+    session = getSession(target.family);
+  } catch (err) {
+    return {
+      ok: false,
+      method: 'icmp-raw',
+      host: safeHost,
+      address: target.address,
+      error: err.code || err.message,
+      hint:
+        'raw 소켓 생성 실패. 컨테이너에 NET_RAW 권한이 필요합니다. 예: docker run --cap-add=NET_RAW ...',
+    };
+  }
+
+  const attempts = [];
+  for (let i = 0; i < count; i++) {
+    const r = await pingOnce(session, target.address);
+    attempts.push({
+      seq: i + 1,
+      ok: r.ok,
+      latencyMs: r.latencyMs,
+      error: r.ok ? undefined : r.error,
+    });
+  }
+
+  const succeeded = attempts.filter((a) => a.ok);
+  const latencies = succeeded.map((a) => a.latencyMs).filter((n) => typeof n === 'number');
+  const summary = {
+    sent: count,
+    received: succeeded.length,
+    lossPct: Math.round(((count - succeeded.length) / count) * 1000) / 10,
+    minMs: latencies.length ? Math.min(...latencies) : null,
+    avgMs: latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null,
+    maxMs: latencies.length ? Math.max(...latencies) : null,
+  };
+
+  return {
+    ok: succeeded.length > 0,
+    method: 'icmp-raw',
+    host: safeHost,
+    address: target.address,
+    family: target.family,
+    attempts,
+    ...summary,
+  };
 }
 
 export function assertTcpTarget(host, port) {

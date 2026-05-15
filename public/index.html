@@ -91,6 +91,11 @@
       opacity: 0.6;
       cursor: not-allowed;
     }
+    button.danger {
+      background: #ef4444;
+      color: #fff;
+    }
+    button.danger:hover { background: #dc2626; }
     .progress-box {
       font-size: 0.875rem;
       color: var(--muted);
@@ -281,6 +286,7 @@
       </div>
       <div class="controls">
         <button id="btn-scan" type="button">스캔 시작</button>
+        <button id="btn-stop" type="button" class="danger" style="display:none;">스캔 중지</button>
         <span id="status" class="status"></span>
       </div>
     </section>
@@ -316,6 +322,7 @@
   <script>
     const nicListEl = document.getElementById('nic-list');
     const btnScan = document.getElementById('btn-scan');
+    const btnStop = document.getElementById('btn-stop');
     const statusEl = document.getElementById('status');
     const sectionProgress = document.getElementById('section-progress');
     const progressHosts = document.getElementById('progress-hosts');
@@ -372,9 +379,15 @@
       `).join('');
     }
 
+    function setRunningUI(running) {
+      btnScan.disabled = running;
+      btnStop.style.display = running ? 'inline-block' : 'none';
+      btnStop.disabled = false;
+    }
+
     function startScan() {
       const idx = parseInt(document.querySelector('input[name="nic"]:checked')?.value ?? '0', 10);
-      btnScan.disabled = true;
+      setRunningUI(true);
       setStatus('스캔 시작 중…', 'running');
       sectionProgress.style.display = 'block';
       progressFill.style.width = '0%';
@@ -389,7 +402,7 @@
         .then((data) => {
           if (data.error) {
             setStatus(data.error, 'error');
-            btnScan.disabled = false;
+            setRunningUI(false);
             return;
           }
           setStatus('스캔 중… (실시간 결과 갱신)', 'running');
@@ -397,7 +410,24 @@
         })
         .catch((e) => {
           setStatus('시작 실패: ' + e.message, 'error');
-          btnScan.disabled = false;
+          setRunningUI(false);
+        });
+    }
+
+    function stopScan() {
+      btnStop.disabled = true;
+      setStatus('중지 요청 중…', 'running');
+      fetch('/api/scan/stop', { method: 'POST' })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.error) {
+            setStatus(data.error, 'error');
+            btnStop.disabled = false;
+          }
+        })
+        .catch((e) => {
+          setStatus('중지 실패: ' + e.message, 'error');
+          btnStop.disabled = false;
         });
     }
 
@@ -421,22 +451,32 @@
         if (data.type === 'sync') {
           sectionProgress.style.display = 'block';
           if (data.running) {
-            btnScan.disabled = true;
-            setStatus('스캔 중… (새로고침해도 유지됨)', 'running');
+            setRunningUI(true);
+            setStatus(
+              data.cancelRequested ? '중지 요청 중… (현재 작업 마무리)' : '스캔 중… (새로고침해도 유지됨)',
+              'running'
+            );
+            if (data.progress) applyProgress(data.progress);
+            if (data.results && data.results.length > 0) renderResults(data.results);
+          } else if (data.finishReason === 'stopped') {
+            setRunningUI(false);
+            setStatus(`중지됨 (${data.elapsed || 0}초)`, 'error');
             if (data.progress) applyProgress(data.progress);
             if (data.results && data.results.length > 0) renderResults(data.results);
           } else if (data.results && data.results.length > 0) {
+            setRunningUI(false);
             progressFill.style.width = '100%';
             progressHosts.textContent = `완료 ${data.results.length} 호스트`;
             progressPorts.textContent = '65535 / 65535';
             setStatus('이전 스캔 결과', 'done');
-            btnScan.disabled = false;
             renderResults(data.results);
           }
           return;
         }
         if (data.type === 'progress') {
           applyProgress(data);
+        } else if (data.type === 'stopping') {
+          setStatus('중지 요청 처리 중… (현재 작업 마무리)', 'running');
         } else if (data.type === 'result') {
           const existing = Array.from(resultsBody.querySelectorAll('tr')).filter((tr) => !tr.querySelector('.empty'));
           const newRow = document.createElement('tr');
@@ -447,17 +487,20 @@
           if (resultsBody.querySelector('.empty')) resultsBody.innerHTML = '';
           resultsBody.appendChild(newRow);
         } else if (data.type === 'done') {
-          eventSource.close();
-          eventSource = null;
           progressFill.style.width = '100%';
           progressHosts.textContent = data.results?.length ? `완료 ${data.results.length} 호스트` : '완료';
           progressPorts.textContent = '65535 / 65535';
           setStatus(`완료 (${data.elapsed || 0}초)`, 'done');
-          btnScan.disabled = false;
+          setRunningUI(false);
+          if (data.results && data.results.length > 0) renderResults(data.results);
+        } else if (data.type === 'stopped') {
+          setStatus(`중지됨 (${data.elapsed || 0}초)`, 'error');
+          setRunningUI(false);
+          if (data.progress) applyProgress(data.progress);
           if (data.results && data.results.length > 0) renderResults(data.results);
         } else if (data.type === 'error') {
           setStatus(data.message || '오류 발생', 'error');
-          btnScan.disabled = false;
+          setRunningUI(false);
           if (eventSource) eventSource.close();
           eventSource = null;
         }
@@ -470,6 +513,7 @@
     }
 
     btnScan.addEventListener('click', startScan);
+    btnStop.addEventListener('click', stopScan);
     loadInterfaces();
     connectStream();
 

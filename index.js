@@ -71,9 +71,10 @@ function checkPort(host, port, timeoutMs = 800) {
   });
 }
 
-async function scanPortsOnHost(host, ports, onProgress, concurrency = 400) {
+async function scanPortsOnHost(host, ports, onProgress, isCancelled, concurrency = 400) {
   const open = [];
   for (let i = 0; i < ports.length; i += concurrency) {
+    if (isCancelled && isCancelled()) break;
     const chunk = ports.slice(i, i + concurrency);
     const results = await Promise.all(chunk.map((p) => checkPort(host, p)));
     for (const r of results) {
@@ -86,9 +87,12 @@ async function scanPortsOnHost(host, ports, onProgress, concurrency = 400) {
 
 const scanState = {
   running: false,
+  cancelRequested: false,
   results: [],        // { host, ports: number[] }
   progress: null,     // { currentHost, totalHosts, hostProgress, hostTotal }
   startTime: null,
+  endedAt: null,
+  finishReason: null, // 'done' | 'stopped' | 'error'
   listeners: [],      // SSE res objects
 };
 
@@ -118,31 +122,40 @@ async function runScan(interfaceIndex = 0) {
   for (let n = first; n <= last; n++) hosts.push(intToIp(n));
 
   scanState.running = true;
+  scanState.cancelRequested = false;
   scanState.results = [];
   scanState.startTime = Date.now();
+  scanState.endedAt = null;
+  scanState.finishReason = null;
   scanState.progress = { currentHost: 0, totalHosts: hosts.length, hostProgress: 0, hostTotal: ALL_PORTS.length };
   broadcast({ type: 'start', totalHosts: hosts.length, portsTotal: ALL_PORTS.length });
 
+  const isCancelled = () => scanState.cancelRequested || !scanState.running;
+
   const hostConcurrency = 5;
   for (let i = 0; i < hosts.length; i += hostConcurrency) {
-    if (!scanState.running) break;
+    if (isCancelled()) break;
     const chunk = hosts.slice(i, i + hostConcurrency);
     const chunkResults = await Promise.all(
       chunk.map((host, hostIndex) =>
-        scanPortsOnHost(host, ALL_PORTS, (done, total) => {
-          const completedHosts = i;
-          const scanningHostNum = i + hostIndex + 1;
-          scanState.progress = {
-            completedHosts,
-            totalHosts: hosts.length,
-            scanningHostFrom: i + 1,
-            scanningHostTo: i + chunk.length,
-            hostProgress: done,
-            hostTotal: total,
-            currentHostIp: host,
-          };
-          broadcast({ type: 'progress', ...scanState.progress });
-        })
+        scanPortsOnHost(
+          host,
+          ALL_PORTS,
+          (done, total) => {
+            const completedHosts = i;
+            scanState.progress = {
+              completedHosts,
+              totalHosts: hosts.length,
+              scanningHostFrom: i + 1,
+              scanningHostTo: i + chunk.length,
+              hostProgress: done,
+              hostTotal: total,
+              currentHostIp: host,
+            };
+            broadcast({ type: 'progress', ...scanState.progress });
+          },
+          isCancelled
+        )
       )
     );
     chunk.forEach((host, idx) => {
@@ -152,6 +165,7 @@ async function runScan(interfaceIndex = 0) {
         broadcast({ type: 'result', host, ports });
       }
     });
+    if (isCancelled()) break;
     const completedHosts = i + chunk.length;
     scanState.progress = {
       completedHosts,
@@ -164,9 +178,17 @@ async function runScan(interfaceIndex = 0) {
     broadcast({ type: 'progress', ...scanState.progress });
   }
 
+  const wasCancelled = scanState.cancelRequested;
   scanState.running = false;
-  const elapsed = ((Date.now() - scanState.startTime) / 1000).toFixed(1);
-  broadcast({ type: 'done', results: scanState.results, elapsed });
+  scanState.endedAt = Date.now();
+  scanState.finishReason = wasCancelled ? 'stopped' : 'done';
+  const elapsed = ((scanState.endedAt - scanState.startTime) / 1000).toFixed(1);
+  broadcast({
+    type: wasCancelled ? 'stopped' : 'done',
+    results: scanState.results,
+    elapsed,
+    progress: scanState.progress,
+  });
 }
 
 const app = express();
@@ -196,17 +218,30 @@ app.post('/api/scan', (req, res) => {
   const interfaceIndex = Number(req.body?.interfaceIndex) ?? 0;
   runScan(interfaceIndex).catch((err) => {
     scanState.running = false;
+    scanState.finishReason = 'error';
     broadcast({ type: 'error', message: err.message });
   });
   res.json({ started: true, interfaceIndex });
 });
 
+app.post('/api/scan/stop', (req, res) => {
+  if (!scanState.running) {
+    return res.status(409).json({ error: '실행 중인 스캔이 없습니다.' });
+  }
+  scanState.cancelRequested = true;
+  broadcast({ type: 'stopping' });
+  res.json({ stopping: true });
+});
+
 app.get('/api/scan/status', (req, res) => {
   res.json({
     running: scanState.running,
+    cancelRequested: scanState.cancelRequested,
+    finishReason: scanState.finishReason,
     results: scanState.results,
     progress: scanState.progress,
     startTime: scanState.startTime,
+    endedAt: scanState.endedAt,
   });
 });
 
@@ -219,16 +254,22 @@ app.get('/api/scan/stream', (req, res) => {
   const sync = {
     type: 'sync',
     running: scanState.running,
+    cancelRequested: scanState.cancelRequested,
+    finishReason: scanState.finishReason,
     results: scanState.results,
     progress: scanState.progress,
     startTime: scanState.startTime,
   };
-  if (scanState.running && scanState.progress) {
-    const p = scanState.progress;
+  if (scanState.running) {
     sync.elapsed = scanState.startTime ? ((Date.now() - scanState.startTime) / 1000).toFixed(1) : 0;
-  } else if (!scanState.running && scanState.results.length > 0) {
+  } else if (scanState.finishReason === 'stopped') {
+    sync.type = 'stopped';
+    sync.results = scanState.results;
+    sync.elapsed = scanState.startTime && scanState.endedAt ? ((scanState.endedAt - scanState.startTime) / 1000).toFixed(1) : 0;
+  } else if (scanState.results.length > 0) {
     sync.type = 'done';
     sync.results = scanState.results;
+    sync.elapsed = scanState.startTime && scanState.endedAt ? ((scanState.endedAt - scanState.startTime) / 1000).toFixed(1) : 0;
   }
   res.write(`data: ${JSON.stringify(sync)}\n\n`);
   req.on('close', () => {
