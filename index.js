@@ -292,7 +292,7 @@ app.post('/api/debug/http', async (req, res) => {
 
 app.post('/api/debug/ping', async (req, res) => {
   try {
-    const result = await runPing(req.body?.host, { count: req.body?.count });
+    const result = await runPing(req.body?.host, { count: req.body?.count, port: req.body?.port });
     res.json(result);
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });

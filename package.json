@@ -9,7 +9,6 @@
     "dev": "node index.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "net-ping": "^1.2.4"
+    "express": "^4.21.0"
   }
 }

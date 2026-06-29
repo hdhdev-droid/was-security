@@ -1,17 +1,9 @@
-FROM node:20-alpine AS builder
+FROM node:20-alpine
 WORKDIR /app
-
-RUN apk add --no-cache python3 make g++ linux-headers
 
 COPY package.json package-lock.json* ./
 RUN npm ci 2>/dev/null || npm install
 
-
-FROM node:20-alpine
-WORKDIR /app
-
-COPY --from=builder /app/node_modules ./node_modules
-COPY package.json ./
 COPY index.js network-debug.js ./
 COPY public ./public/
 

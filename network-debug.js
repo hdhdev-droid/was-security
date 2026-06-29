@@ -3,7 +3,6 @@ import http from 'http';
 import https from 'https';
 import dns from 'dns/promises';
 import { URL } from 'url';
-import netPing from 'net-ping';
 
 const HOST_PATTERN = /^[a-zA-Z0-9.-]+$/;
 const SHELL_METACHAR = /[;&|`$(){}[\]<>'"\n\r\\]/;
@@ -28,33 +27,8 @@ export function assertTcpHost(host) {
   return h;
 }
 
-let v4Session = null;
-let v6Session = null;
-
-function getSession(family) {
-  if (family === 6) {
-    if (!v6Session) {
-      v6Session = netPing.createSession({
-        networkProtocol: netPing.NetworkProtocol.IPv6,
-        packetSize: 16,
-        retries: 0,
-        timeout: 3000,
-      });
-      v6Session.on('error', () => {});
-    }
-    return v6Session;
-  }
-  if (!v4Session) {
-    v4Session = netPing.createSession({
-      networkProtocol: netPing.NetworkProtocol.IPv4,
-      packetSize: 16,
-      retries: 0,
-      timeout: 3000,
-    });
-    v4Session.on('error', () => {});
-  }
-  return v4Session;
-}
+const DEFAULT_PING_PORT = 80;
+const PING_TIMEOUT_MS = 3000;
 
 async function resolveTarget(host) {
   if (net.isIP(host)) return { address: host, family: net.isIP(host) };
@@ -68,26 +42,51 @@ async function resolveTarget(host) {
   }
 }
 
-function pingOnce(session, address) {
+// TCP 기반 ping: raw 소켓/ICMP 대신 TCP 핸드셰이크 도달 여부로 호스트 생존을 판정한다.
+// 연결 성공은 물론, 연결 거부(RST)도 호스트가 응답한 것이므로 "도달 가능"으로 본다.
+// 타임아웃/네트워크·호스트 unreachable 만 실패로 간주한다.
+function tcpPingOnce(address, port, timeoutMs) {
   return new Promise((resolve) => {
-    session.pingHost(address, (error, target, sent, rcvd) => {
-      const latencyMs = sent && rcvd ? rcvd - sent : null;
-      if (error) {
-        resolve({
-          ok: false,
-          target,
-          latencyMs,
-          error: error.code || error.constructor?.name || error.toString(),
-        });
+    const started = Date.now();
+    const socket = new net.Socket();
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      finish({ ok: false, latencyMs: null, error: 'timeout' });
+    }, timeoutMs);
+
+    socket.once('connect', () => {
+      finish({ ok: true, latencyMs: Date.now() - started, state: 'open' });
+    });
+
+    socket.once('error', (err) => {
+      const code = err.code || err.message;
+      if (code === 'ECONNREFUSED') {
+        // 호스트는 살아있고 포트만 닫힘 → 도달 가능으로 판정
+        finish({ ok: true, latencyMs: Date.now() - started, state: 'refused' });
         return;
       }
-      resolve({ ok: true, target, latencyMs });
+      finish({ ok: false, latencyMs: null, error: code });
     });
+
+    socket.connect(port, address);
   });
 }
 
 export async function runPing(host, options = {}) {
   const count = Math.min(Math.max(Number(options.count) || 1, 1), 10);
+  const port = (() => {
+    const p = Number(options.port);
+    return Number.isInteger(p) && p >= 1 && p <= 65535 ? p : DEFAULT_PING_PORT;
+  })();
   const safeHost = assertPingHost(host);
 
   let target;
@@ -96,34 +95,21 @@ export async function runPing(host, options = {}) {
   } catch (err) {
     return {
       ok: false,
-      method: 'icmp-raw',
+      method: 'tcp-ping',
       host: safeHost,
+      port,
       error: err.message,
-    };
-  }
-
-  let session;
-  try {
-    session = getSession(target.family);
-  } catch (err) {
-    return {
-      ok: false,
-      method: 'icmp-raw',
-      host: safeHost,
-      address: target.address,
-      error: err.code || err.message,
-      hint:
-        'raw 소켓 생성 실패. 컨테이너에 NET_RAW 권한이 필요합니다. 예: docker run --cap-add=NET_RAW ...',
     };
   }
 
   const attempts = [];
   for (let i = 0; i < count; i++) {
-    const r = await pingOnce(session, target.address);
+    const r = await tcpPingOnce(target.address, port, PING_TIMEOUT_MS);
     attempts.push({
       seq: i + 1,
       ok: r.ok,
       latencyMs: r.latencyMs,
+      state: r.state,
       error: r.ok ? undefined : r.error,
     });
   }
@@ -141,10 +127,11 @@ export async function runPing(host, options = {}) {
 
   return {
     ok: succeeded.length > 0,
-    method: 'icmp-raw',
+    method: 'tcp-ping',
     host: safeHost,
     address: target.address,
     family: target.family,
+    port,
     attempts,
     ...summary,
   };
